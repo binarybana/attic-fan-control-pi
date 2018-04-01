@@ -48,8 +48,10 @@ fn main() {
         Err(e) => panic!("Env var ATTIC_DEVICE_ID (with particle device id) not set"),
     };
     
+    // let client = reqwest::ClientBuilder::new().danger_disable_certificate_validation_entirely().build().unwrap();
+    let client = reqwest::ClientBuilder::new().build().unwrap();
     let url = format!("https://api.particle.io/v1/devices/{}/temp?access_token={}", device_id, token);
-    let mut resp = reqwest::get(&url).unwrap();
+    let mut resp = client.get(&url).send().unwrap();
     let tempRecord: TempRecord = resp.json().unwrap();
     let temp = tempRecord.result;
     println!("{}", temp);
