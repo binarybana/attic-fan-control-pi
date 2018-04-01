@@ -11,17 +11,24 @@ extern crate rand;
 
 use rand::Rng;
 
-use rppal::gpio::{GPIO, Mode, Level};
+use rppal::gpio::{Gpio, Mode, Level};
 use rppal::system::DeviceInfo;
 
-// The GPIO module uses BCM pin numbering. BCM 18 equates to physical pin 12.
-const PINS: &[u8] = &[15, 18, 23, 24];
+// The Gpio module uses BCM pin numbering. BCM 18 equates to physical pin 12.
+// Pi1:
+// const PINS: &[u8] = &[15, 18, 23, 24];
+// Pi3:
+// 12: gameroom
+// 16: bedroom
+// 20: kids room
+// 21: kids room
+const PINS: &[u8] = &[12, 16, 20, 21];
 
 fn main() {
     let device_info = DeviceInfo::new().unwrap();
     println!("Model: {} (SoC: {})", device_info.model(), device_info.soc());
 
-    let mut gpio = GPIO::new().unwrap();
+    let mut gpio = Gpio::new().unwrap();
     for pin in PINS {
         gpio.set_mode(*pin, Mode::Output);
     }
@@ -36,8 +43,32 @@ fn main() {
             (&Method::GET, "/hello") => {
                 Ok(response.body("<h1>Hi!</h1><p>Hello Rust!</p>".as_bytes())?)
             }
+            (&Method::GET, "/12") => {
+                let gpio = Gpio::new().unwrap();
+                gpio.write(12, Level::Low);
+                println!("12 on");
+                Ok(response.body("<h1>Hi!</h1><p>12 On</p>".as_bytes())?)
+            }
+            (&Method::GET, "/16") => {
+                let gpio = Gpio::new().unwrap();
+                gpio.write(16, Level::Low);
+                println!("16 on");
+                Ok(response.body("<h1>Hi!</h1><p>16 On</p>".as_bytes())?)
+            }
+            (&Method::GET, "/20") => {
+                let gpio = Gpio::new().unwrap();
+                gpio.write(20, Level::Low);
+                println!("20 on");
+                Ok(response.body("<h1>Hi!</h1><p>20 On</p>".as_bytes())?)
+            }
+            (&Method::GET, "/21") => {
+                let gpio = Gpio::new().unwrap();
+                gpio.write(21, Level::Low);
+                println!("21 on");
+                Ok(response.body("<h1>Hi!</h1><p>21 On</p>".as_bytes())?)
+            }
             (&Method::GET, "/pinchange") => {
-                let gpio = GPIO::new().unwrap();
+                let gpio = Gpio::new().unwrap();
                 let mut rng = rand::thread_rng();
                 let num = rng.gen::<u8>() & (16-1);
                 println!("\nnum: {:b}", num);
@@ -51,6 +82,14 @@ fn main() {
                     println!(" ... done");
                 }
                 Ok(response.body("<h1>Hi!</h1><p>Pins changed!</p>".as_bytes())?)
+            }
+            (&Method::GET, "/off") => {
+                let gpio = Gpio::new().unwrap();
+                for i in 0..4 {
+                        gpio.write(PINS[i], Level::High);
+                }
+                println!(" ... done");
+                Ok(response.body("<h1>Hi!</h1><p>Pins off.</p>".as_bytes())?)
             }
             (_, _) => {
                 response.status(StatusCode::NOT_FOUND);
