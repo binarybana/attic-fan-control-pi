@@ -1,5 +1,6 @@
 ## Attic fan control
 
+Need to have a particle photon where you can read temperature like so:
 ```
 curl "https://api.particle.io/v1/devices/$ATTIC_DEVICE_ID/temp?access_token=$ATTIC_ACCESS_TOKEN"
 ```

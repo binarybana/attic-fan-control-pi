@@ -2,6 +2,7 @@
 authors = ["Jason Knight <Jason@JasonKnight.us>"]
 name = "pi-gpio"
 version = "0.1.0"
+
 [dependencies]
 env_logger = "0.5.6"
 log = "0.4.1"
@@ -9,3 +10,10 @@ rand = "0.4.2"
 rppal = "0.4.0"
 simple-server = "0.3.0"
 reqwest = "0.8.5"
+serde = "1.0.36"
+serde_json = "1.0.13"
+serde_derive = "1.0.36"
+
+[patch.crates-io]
+tokio = { git = 'https://github.com/dgriffen/tokio', branch = 'patch-1' }
+tokio-executor = { git = 'https://github.com/dgriffen/tokio/tokio-executor', branch = 'patch-1' }
