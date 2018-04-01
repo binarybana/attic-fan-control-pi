@@ -36,8 +36,7 @@ struct TempRecord {
     result: f64,
 }
 
-fn main() {
-
+fn get_temp() -> Result<f64, reqwest::Error> {
     let token = match std::env::var("ATTIC_ACCESS_TOKEN") {
         Ok(val) => val,
         Err(e) => panic!("Env var ATTIC_ACCESS_TOKEN (with particle access token) not set"),
@@ -48,13 +47,27 @@ fn main() {
         Err(e) => panic!("Env var ATTIC_DEVICE_ID (with particle device id) not set"),
     };
     
-    // let client = reqwest::ClientBuilder::new().danger_disable_certificate_validation_entirely().build().unwrap();
-    let client = reqwest::ClientBuilder::new().build().unwrap();
+    let client = reqwest::ClientBuilder::new().build()?;
     let url = format!("https://api.particle.io/v1/devices/{}/temp?access_token={}", device_id, token);
-    let mut resp = client.get(&url).send().unwrap();
-    let tempRecord: TempRecord = resp.json().unwrap();
-    let temp = tempRecord.result;
-    println!("{}", temp);
+    let mut resp = client.get(&url).send()?;
+    let temp_record: TempRecord = resp.json()?;
+    let temp = temp_record.result;
+    Ok(temp)
+}
+
+fn main() {
+
+    let alpha = 0.9;
+    let smoothed_temp = get_temp().unwrap();
+
+    loop {
+        // sleep here
+        let smoothed_temp = match get_temp() {
+            Ok(temp) => (1.0 - alpha) * smoothed_temp + alpha * temp,
+            Err(_) => continue,
+        };
+        println!("smoothed temp: {}", smoothed_temp);
+    }
 
     // let device_info = DeviceInfo::new().unwrap();
     // println!("Model: {} (SoC: {})", device_info.model(), device_info.soc());
