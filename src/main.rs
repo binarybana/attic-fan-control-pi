@@ -8,6 +8,7 @@ use simple_server::{Server, Method, StatusCode};
 
 extern crate rppal;
 extern crate rand;
+extern crate reqwest;
 
 use rand::Rng;
 
