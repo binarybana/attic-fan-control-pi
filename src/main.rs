@@ -4,7 +4,7 @@ extern crate env_logger;
 
 extern crate simple_server;
 
-use simple_server::{Server, Method, StatusCode};
+// use simple_server::{Server, Method, StatusCode};
 
 extern crate rppal;
 extern crate rand;
@@ -16,7 +16,8 @@ extern crate serde_derive;
 extern crate serde;
 extern crate serde_json;
 
-use rand::Rng;
+extern crate chrono;
+use chrono::prelude::*;
 
 use rppal::gpio::{Gpio, Mode, Level};
 use rppal::system::DeviceInfo;
@@ -73,6 +74,7 @@ fn main() {
             1.0
         },
     };
+    println!("Set point: {}, buffer: {}", set_point, buffer);
     let mut fan_on = false;
 
     use std::{thread, time};
@@ -90,6 +92,12 @@ fn main() {
 
 
     loop {
+        let now = Local::now();
+        if now > now.date().and_hms(5, 30, 0) || now < now.date().and_hms(8, 30, 0) {
+            let duration = now.date().and_hms(8, 30, 0).signed_duration_since(now);
+            println!("Sleeping for {:?} until {:?}", duration, now.date().and_hms(8, 30, 0));
+            thread::sleep(duration);
+        }
         thread::sleep(one_minute);
         let smoothed_temp = match get_temp() {
             Ok(new_temp) => (1.0 - alpha) * smoothed_temp + alpha * new_temp,

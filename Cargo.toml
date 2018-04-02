@@ -13,6 +13,7 @@ serde = "1.0.36"
 serde_json = "1.0.13"
 serde_derive = "1.0.36"
 reqwest = "0.8.5"
+chrono = "0.4.1"
 
 # Needed until https://github.com/tokio-rs/tokio/pull/274 lands
 [patch.crates-io]
