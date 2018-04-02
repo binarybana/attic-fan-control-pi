@@ -39,12 +39,12 @@ struct TempRecord {
 fn get_temp() -> Result<f64, reqwest::Error> {
     let token = match std::env::var("ATTIC_ACCESS_TOKEN") {
         Ok(val) => val,
-        Err(e) => panic!("Env var ATTIC_ACCESS_TOKEN (with particle access token) not set"),
+        Err(_) => panic!("Env var ATTIC_ACCESS_TOKEN (with particle access token) not set"),
     };
 
     let device_id = match std::env::var("ATTIC_DEVICE_ID") {
         Ok(val) => val,
-        Err(e) => panic!("Env var ATTIC_DEVICE_ID (with particle device id) not set"),
+        Err(_) => panic!("Env var ATTIC_DEVICE_ID (with particle device id) not set"),
     };
     
     let client = reqwest::ClientBuilder::new().build()?;
@@ -58,15 +58,59 @@ fn get_temp() -> Result<f64, reqwest::Error> {
 fn main() {
 
     let alpha = 0.9;
-    let smoothed_temp = get_temp().unwrap();
+    let smoothed_temp = get_temp().unwrap_or(17.0);
+    let set_point = match std::env::var("ATTIC_SET_POINT") {
+        Ok(val) => val.parse().unwrap_or(17.7),
+        Err(_) => {
+            println!("Env var ATTIC_SET_POINT not set");
+            17.7
+        },
+    };
+    let buffer = match std::env::var("ATTIC_BUFFER") {
+        Ok(val) => val.parse().unwrap_or(1.0),
+        Err(_) => {
+            println!("Env var ATTIC_BUFFER not set");
+            1.0
+        },
+    };
+    let mut fan_on = false;
+
+    use std::{thread, time};
+    let one_minute = time::Duration::new(60, 0);
+
+    let device_info = DeviceInfo::new().unwrap();
+    println!("Model: {} (SoC: {})", device_info.model(), device_info.soc());
+
+    let mut gpio = Gpio::new().unwrap();
+    for pin in PINS {
+        gpio.set_mode(*pin, Mode::Output);
+        // Make sure everything is off
+        gpio.write(*pin, Level::High);
+    }
+
 
     loop {
-        // sleep here
+        thread::sleep(one_minute);
         let smoothed_temp = match get_temp() {
-            Ok(temp) => (1.0 - alpha) * smoothed_temp + alpha * temp,
-            Err(_) => continue,
+            Ok(new_temp) => (1.0 - alpha) * smoothed_temp + alpha * new_temp,
+            Err(_) => {
+                println!("Failed to get temp");
+                continue;
+            },
         };
         println!("smoothed temp: {}", smoothed_temp);
+
+        if smoothed_temp < (set_point-buffer) && fan_on {
+            // turn off
+            println!("Turning off fan");
+            fan_on = false;
+            gpio.write(16, Level::High);
+        } else if smoothed_temp > (set_point+buffer) && !fan_on {
+            // turn on
+            println!("Turning fan on");
+            fan_on = true;
+            gpio.write(16, Level::Low);
+        }
     }
 
     // let device_info = DeviceInfo::new().unwrap();
