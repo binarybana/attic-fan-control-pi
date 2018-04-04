@@ -2,25 +2,24 @@
 extern crate log;
 extern crate env_logger;
 
-extern crate simple_server;
-
-// use simple_server::{Server, Method, StatusCode};
-
-extern crate rppal;
-extern crate rand;
 extern crate reqwest;
 
 #[macro_use]
-extern crate serde_derive;
+extern crate rouille;
 
+#[macro_use]
+extern crate serde_derive;
 extern crate serde;
 extern crate serde_json;
 
 extern crate chrono;
 use chrono::prelude::*;
 
+extern crate rppal;
 use rppal::gpio::{Gpio, Mode, Level};
 use rppal::system::DeviceInfo;
+
+use std::sync::{Mutex, Arc};
 
 // The Gpio module uses BCM pin numbering. BCM 18 equates to physical pin 12.
 // Pi1:
@@ -56,8 +55,18 @@ fn get_temp() -> Result<f64, reqwest::Error> {
     Ok(temp)
 }
 
-fn main() {
+fn test(data: Arc<Mutex<f32>>) {
+    let one_second = std::time::Duration::new(1, 0);
+    loop {
+        {
+            let mut datainside = data.lock().unwrap();
+            *datainside += 1.0;
+        }
+        std::thread::sleep(one_second);
+    }
+}
 
+fn thermostat(data: Arc<Mutex<f32>>) {
     let alpha = 0.9;
     let smoothed_temp = get_temp().unwrap_or(17.0);
     let set_point = match std::env::var("ATTIC_SET_POINT") {
@@ -120,20 +129,74 @@ fn main() {
             println!("Turning fan on");
             fan_on = true;
             gpio.write(16, Level::Low);
+            let mut datainside = data.lock().unwrap();
+            *datainside += 1.0;
         }
     }
+}
 
-    // let device_info = DeviceInfo::new().unwrap();
-    // println!("Model: {} (SoC: {})", device_info.model(), device_info.soc());
-    //
-    // let mut gpio = Gpio::new().unwrap();
-    // for pin in PINS {
-    //     gpio.set_mode(*pin, Mode::Output);
-    // }
-    //
-    // let host = "0.0.0.0";
-    // let port = "8000";
-    //
+fn main() {
+
+    let data = Arc::new(Mutex::new(0.0));
+    let data2 = data.clone();
+    let data3 = data.clone();
+    std::thread::spawn(move || { test(data2.clone()) });
+
+    rouille::start_server("0.0.0.0:8000", move |request| {
+        router!(request,
+            (GET) (/) => {
+                // If the request's URL is `/`, we jump here.
+                // This block builds a `Response` object that redirects to the `/hello/world`.
+                rouille::Response::redirect_302("/hello/world")
+            },
+
+            (GET) (/hello/world) => {
+                // If the request's URL is `/hello/world`, we jump here.
+                println!("hello world");
+
+                let datainside = data3.lock().unwrap();
+                // Builds a `Response` object that contains the "hello world" text.
+                rouille::Response::text(format!("hello world {}", datainside))
+            },
+
+            (GET) (/panic) => {
+                // If the request's URL is `/panic`, we jump here.
+                //
+                // This block panics. Fortunately rouille will automatically catch the panic and
+                // send back a 500 error message to the client. This prevents the server from
+                // closing unexpectedly.
+                panic!("Oops!")
+            },
+
+            (GET) (/{id: u32}) => {
+                // If the request's URL is for example `/5`, we jump here.
+                //
+                // The `router!` macro will attempt to parse the identfier (eg. `5`) as a `u32`. If
+                // the parsing fails (for example if the URL is `/hello`), then this block is not
+                // called and the `router!` macro continues looking for another block.
+                println!("u32 {:?}", id);
+
+                // For the same of the example we return an empty response with a 400 status code.
+                rouille::Response::empty_400()
+            },
+
+            (GET) (/{id: String}) => {
+                // If the request's URL is for example `/foo`, we jump here.
+                //
+                // This route is similar to the previous one, but this time we have a `String`.
+                // Parsing into a `String` never fails.
+                println!("String {:?}", id);
+
+                // Builds a `Response` object that contains "hello, " followed with the value
+                // of `id`.
+                rouille::Response::text(format!("hello, {}", id))
+            },
+
+            // The code block is called if none of the other blocks matches the request.
+            // We return an empty response with a 404 status code.
+            _ => rouille::Response::empty_404()
+        )
+    });
     // let server = Server::new(|request, mut response| {
     //     info!("Request received. {} {}", request.method(), request.uri());
     //
