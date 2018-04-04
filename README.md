@@ -10,8 +10,8 @@ Also, if cross compiling to ARM using `cross` then you'll need to run with `SSL_
 ### TODO
   - [x] - First figure out which GPIO pins control which rooms
   - [x] - Get temp data from particle (either particle cloud function or GCE datastore query?)
-  - [ ] - Some exponential scaling to account for poor air mixing and sensor location
-  - [ ] - Thermostat behavior
+  - [x] - Some exponential scaling to account for poor air mixing and sensor location
+  - [x] - Thermostat behavior
   - [ ] - Hook up thermostat setpoint and behavior to REST API
     - [ ] - Switch to Gotham, Rouille, or Rocket from simple server
   - [ ] - Clean up deployment, add systemd unit file, add docs for deployment

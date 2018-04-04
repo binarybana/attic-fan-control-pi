@@ -93,10 +93,12 @@ fn main() {
 
     loop {
         let now = Local::now();
-        if now > now.date().and_hms(5, 30, 0) || now < now.date().and_hms(8, 30, 0) {
-            let duration = now.date().and_hms(8, 30, 0).signed_duration_since(now);
-            println!("Sleeping for {:?} until {:?}", duration, now.date().and_hms(8, 30, 0));
-            thread::sleep(duration);
+        println!("Current time: {}", now);
+        let on_time = now.date().and_hms(22, 0, 0);
+        if now > now.date().and_hms(5, 30, 0) || now < on_time {
+            let duration = on_time.signed_duration_since(now);
+            println!("Sleeping for {:?} until {:?}", duration, on_time);
+            thread::sleep(duration.to_std().unwrap());
         }
         thread::sleep(one_minute);
         let smoothed_temp = match get_temp() {
