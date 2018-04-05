@@ -44,6 +44,7 @@ struct ThermostatState {
     fan_on: bool,
     schedule_on: bool,
     smooth_alpha: f64,
+    power: bool,
 }
 
 fn get_temp() -> Result<f64, reqwest::Error> {
@@ -99,25 +100,17 @@ fn setup() -> ThermostatState {
         fan_on: false,
         schedule_on: true,
         smooth_alpha: alpha,
+        power: true,
     }
 }
 
-fn thermostat(data: Arc<Mutex<ThermostatState>>) {
+/// Always update temperature
+fn temp_updater(data: Arc<Mutex<ThermostatState>>) {
     use std::{thread, time};
     let one_minute = time::Duration::new(60, 0);
-    let gpio = Gpio::new().unwrap();
     loop {
-        let now = Local::now();
-        let on_time = now.date().and_hms(22, 0, 0);
-        if now > now.date().and_hms(5, 30, 0) && now < on_time {
-            let duration = on_time.signed_duration_since(now);
-            println!("Sleeping for {:?} until {:?}", duration, on_time);
-            { (*data.lock().unwrap()).schedule_on = false; }
-            thread::sleep(duration.to_std().unwrap());
-        }
         { // mutex lock scope
             let mut tstate = data.lock().unwrap();
-            (*tstate).schedule_on = true;
             let smoothed_temp = match get_temp() {
                 Ok(new_temp) => (1.0 - tstate.smooth_alpha) * tstate.current_temp + tstate.smooth_alpha * new_temp,
                 Err(_) => {
@@ -127,6 +120,30 @@ fn thermostat(data: Arc<Mutex<ThermostatState>>) {
             };
             (*tstate).current_temp = smoothed_temp;
             println!("smoothed temp: {}", smoothed_temp);
+        }
+        thread::sleep(one_minute);
+    }
+}
+
+/// Control the fan
+fn thermostat(data: Arc<Mutex<ThermostatState>>) {
+    use std::{thread, time};
+    let one_minute = time::Duration::new(60, 0);
+    let gpio = Gpio::new().unwrap();
+    loop {
+        let now = Local::now();
+        let on_time = now.date().and_hms(22, 0, 0);
+        if now > now.date().and_hms(5, 30, 0) && now < on_time {
+            println!("Shutting off fan");
+            gpio.write(16, Level::High);
+            let duration = on_time.signed_duration_since(now);
+            println!("Sleeping for {:?} until {:?}", duration, on_time);
+            { (*data.lock().unwrap()).schedule_on = false; }
+            thread::sleep(duration.to_std().unwrap());
+        } else {
+            let mut tstate = data.lock().unwrap();
+            (*tstate).schedule_on = true;
+            let smoothed_temp = (*tstate).current_temp;
             if smoothed_temp < (tstate.set_point-tstate.buffer) && tstate.fan_on {
                 // turn off
                 println!("Turning off fan");
@@ -148,7 +165,9 @@ fn main() {
     let data = Arc::new(Mutex::new(setup()));
     let data2 = data.clone();
     let data3 = data.clone();
-    std::thread::spawn(move || { thermostat(data2.clone()) });
+    let data4 = data.clone();
+    std::thread::spawn( || { thermostat(data2) });
+    std::thread::spawn( || { temp_updater(data4) });
 
     rouille::start_server("0.0.0.0:8000", move |request| {
         router!(request,
@@ -157,22 +176,40 @@ fn main() {
                 rouille::Response::text(format!("Thermostat state:\n{:?}", datainside))
             },
 
-            // (GET) (/on) => {
-            //     let mut datainside = *data3.lock().unwrap();
-            //     println!("Tstat enabled manually", id);
-            //     rouille::Response::text(format!("Turned off", id))
-            // },
-            //
-            // (GET) (/off) => {
-            //     let mut datainside = *data3.lock().unwrap();
-            //     println!("Tstat disabled manually", id);
-            //     rouille::Response::text(format!("Turned off", id))
-            // },
+            (GET) (/on) => {
+                let mut datainside = data3.lock().unwrap();
+                (*datainside).power = true;
+                println!("Tstat enabled manually");
+                rouille::Response::text("Turned on")
+            },
 
-            // (GET) (/{id: String}) => {
-            //     println!("String {:?}", id);
-            //     rouille::Response::text(format!("hello, {}", id))
-            // },
+            (GET) (/off) => {
+                let mut datainside = data3.lock().unwrap();
+                (*datainside).power = false;
+                println!("Tstat disabled manually");
+                rouille::Response::text("Turned off")
+            },
+
+            (GET) (/set_point/{set_point: f64}) => {
+                let mut datainside = data3.lock().unwrap();
+                (*datainside).set_point = set_point;
+                println!("Set point set to {}", set_point);
+                rouille::Response::text(format!("Set point set to {}", set_point))
+            },
+
+            (GET) (/alpha/{alpha: f64}) => {
+                let mut datainside = data3.lock().unwrap();
+                (*datainside).smooth_alpha = alpha;
+                println!("Alpha set to {}", alpha);
+                rouille::Response::text(format!("Alpha set to {}", alpha))
+            },
+
+            (GET) (/buffer/{buffer: f64}) => {
+                let mut datainside = data3.lock().unwrap();
+                (*datainside).buffer = buffer;
+                println!("Buffer set to {}", buffer);
+                rouille::Response::text(format!("Buffer set to {}", buffer))
+            },
 
             _ => rouille::Response::empty_404()
         )
