@@ -1,6 +1,6 @@
-#[macro_use]
-extern crate log;
-extern crate env_logger;
+// #[macro_use]
+// extern crate log;
+// extern crate env_logger;
 
 extern crate reqwest;
 
@@ -36,6 +36,16 @@ struct TempRecord {
     result: f64,
 }
 
+#[derive(Debug, Clone)]
+struct ThermostatState {
+    current_temp: f64,
+    set_point: f64,
+    buffer: f64,
+    fan_on: bool,
+    schedule_on: bool,
+    smooth_alpha: f64,
+}
+
 fn get_temp() -> Result<f64, reqwest::Error> {
     let token = match std::env::var("ATTIC_ACCESS_TOKEN") {
         Ok(val) => val,
@@ -55,18 +65,7 @@ fn get_temp() -> Result<f64, reqwest::Error> {
     Ok(temp)
 }
 
-fn test(data: Arc<Mutex<f32>>) {
-    let one_second = std::time::Duration::new(1, 0);
-    loop {
-        {
-            let mut datainside = data.lock().unwrap();
-            *datainside += 1.0;
-        }
-        std::thread::sleep(one_second);
-    }
-}
-
-fn thermostat(data: Arc<Mutex<f32>>) {
+fn setup() -> ThermostatState {
     let alpha = 0.9;
     let smoothed_temp = get_temp().unwrap_or(17.0);
     let set_point = match std::env::var("ATTIC_SET_POINT") {
@@ -84,11 +83,6 @@ fn thermostat(data: Arc<Mutex<f32>>) {
         },
     };
     println!("Set point: {}, buffer: {}", set_point, buffer);
-    let mut fan_on = false;
-
-    use std::{thread, time};
-    let one_minute = time::Duration::new(60, 0);
-
     let device_info = DeviceInfo::new().unwrap();
     println!("Model: {} (SoC: {})", device_info.model(), device_info.soc());
 
@@ -98,166 +92,89 @@ fn thermostat(data: Arc<Mutex<f32>>) {
         // Make sure everything is off
         gpio.write(*pin, Level::High);
     }
+    ThermostatState {
+        current_temp: smoothed_temp,
+        set_point: set_point,
+        buffer: buffer,
+        fan_on: false,
+        schedule_on: true,
+        smooth_alpha: alpha,
+    }
+}
 
-
+fn thermostat(data: Arc<Mutex<ThermostatState>>) {
+    use std::{thread, time};
+    let one_minute = time::Duration::new(60, 0);
+    let gpio = Gpio::new().unwrap();
     loop {
         let now = Local::now();
-        println!("Current time: {}", now);
         let on_time = now.date().and_hms(22, 0, 0);
-        if now > now.date().and_hms(5, 30, 0) || now < on_time {
+        if now > now.date().and_hms(5, 30, 0) && now < on_time {
             let duration = on_time.signed_duration_since(now);
             println!("Sleeping for {:?} until {:?}", duration, on_time);
+            { (*data.lock().unwrap()).schedule_on = false; }
             thread::sleep(duration.to_std().unwrap());
         }
-        thread::sleep(one_minute);
-        let smoothed_temp = match get_temp() {
-            Ok(new_temp) => (1.0 - alpha) * smoothed_temp + alpha * new_temp,
-            Err(_) => {
-                println!("Failed to get temp");
-                continue;
-            },
-        };
-        println!("smoothed temp: {}", smoothed_temp);
-
-        if smoothed_temp < (set_point-buffer) && fan_on {
-            // turn off
-            println!("Turning off fan");
-            fan_on = false;
-            gpio.write(16, Level::High);
-        } else if smoothed_temp > (set_point+buffer) && !fan_on {
-            // turn on
-            println!("Turning fan on");
-            fan_on = true;
-            gpio.write(16, Level::Low);
-            let mut datainside = data.lock().unwrap();
-            *datainside += 1.0;
+        { // mutex lock scope
+            let mut tstate = data.lock().unwrap();
+            (*tstate).schedule_on = true;
+            let smoothed_temp = match get_temp() {
+                Ok(new_temp) => (1.0 - tstate.smooth_alpha) * tstate.current_temp + tstate.smooth_alpha * new_temp,
+                Err(_) => {
+                    println!("Failed to get temp");
+                    continue;
+                },
+            };
+            (*tstate).current_temp = smoothed_temp;
+            println!("smoothed temp: {}", smoothed_temp);
+            if smoothed_temp < (tstate.set_point-tstate.buffer) && tstate.fan_on {
+                // turn off
+                println!("Turning off fan");
+                (*tstate).fan_on = false;
+                gpio.write(16, Level::High);
+            } else if smoothed_temp > (tstate.set_point+tstate.buffer) && !tstate.fan_on {
+                // turn on
+                println!("Turning fan on");
+                (*tstate).fan_on = true;
+                gpio.write(16, Level::Low);
+            }
         }
+        thread::sleep(one_minute);
     }
 }
 
 fn main() {
 
-    let data = Arc::new(Mutex::new(0.0));
+    let data = Arc::new(Mutex::new(setup()));
     let data2 = data.clone();
     let data3 = data.clone();
-    std::thread::spawn(move || { test(data2.clone()) });
+    std::thread::spawn(move || { thermostat(data2.clone()) });
 
     rouille::start_server("0.0.0.0:8000", move |request| {
         router!(request,
             (GET) (/) => {
-                // If the request's URL is `/`, we jump here.
-                // This block builds a `Response` object that redirects to the `/hello/world`.
-                rouille::Response::redirect_302("/hello/world")
+                let datainside: &ThermostatState = &(*data3.lock().unwrap());
+                rouille::Response::text(format!("Thermostat state:\n{:?}", datainside))
             },
 
-            (GET) (/hello/world) => {
-                // If the request's URL is `/hello/world`, we jump here.
-                println!("hello world");
+            // (GET) (/on) => {
+            //     let mut datainside = *data3.lock().unwrap();
+            //     println!("Tstat enabled manually", id);
+            //     rouille::Response::text(format!("Turned off", id))
+            // },
+            //
+            // (GET) (/off) => {
+            //     let mut datainside = *data3.lock().unwrap();
+            //     println!("Tstat disabled manually", id);
+            //     rouille::Response::text(format!("Turned off", id))
+            // },
 
-                let datainside = data3.lock().unwrap();
-                // Builds a `Response` object that contains the "hello world" text.
-                rouille::Response::text(format!("hello world {}", datainside))
-            },
+            // (GET) (/{id: String}) => {
+            //     println!("String {:?}", id);
+            //     rouille::Response::text(format!("hello, {}", id))
+            // },
 
-            (GET) (/panic) => {
-                // If the request's URL is `/panic`, we jump here.
-                //
-                // This block panics. Fortunately rouille will automatically catch the panic and
-                // send back a 500 error message to the client. This prevents the server from
-                // closing unexpectedly.
-                panic!("Oops!")
-            },
-
-            (GET) (/{id: u32}) => {
-                // If the request's URL is for example `/5`, we jump here.
-                //
-                // The `router!` macro will attempt to parse the identfier (eg. `5`) as a `u32`. If
-                // the parsing fails (for example if the URL is `/hello`), then this block is not
-                // called and the `router!` macro continues looking for another block.
-                println!("u32 {:?}", id);
-
-                // For the same of the example we return an empty response with a 400 status code.
-                rouille::Response::empty_400()
-            },
-
-            (GET) (/{id: String}) => {
-                // If the request's URL is for example `/foo`, we jump here.
-                //
-                // This route is similar to the previous one, but this time we have a `String`.
-                // Parsing into a `String` never fails.
-                println!("String {:?}", id);
-
-                // Builds a `Response` object that contains "hello, " followed with the value
-                // of `id`.
-                rouille::Response::text(format!("hello, {}", id))
-            },
-
-            // The code block is called if none of the other blocks matches the request.
-            // We return an empty response with a 404 status code.
             _ => rouille::Response::empty_404()
         )
     });
-    // let server = Server::new(|request, mut response| {
-    //     info!("Request received. {} {}", request.method(), request.uri());
-    //
-    //     match (request.method(), request.uri().path()) {
-    //         (&Method::GET, "/hello") => {
-    //             Ok(response.body("<h1>Hi!</h1><p>Hello Rust!</p>".as_bytes())?)
-    //         }
-    //         (&Method::GET, "/12") => {
-    //             let gpio = Gpio::new().unwrap();
-    //             gpio.write(12, Level::Low);
-    //             println!("12 on");
-    //             Ok(response.body("<h1>Hi!</h1><p>12 On</p>".as_bytes())?)
-    //         }
-    //         (&Method::GET, "/16") => {
-    //             let gpio = Gpio::new().unwrap();
-    //             gpio.write(16, Level::Low);
-    //             println!("16 on");
-    //             Ok(response.body("<h1>Hi!</h1><p>16 On</p>".as_bytes())?)
-    //         }
-    //         (&Method::GET, "/20") => {
-    //             let gpio = Gpio::new().unwrap();
-    //             gpio.write(20, Level::Low);
-    //             println!("20 on");
-    //             Ok(response.body("<h1>Hi!</h1><p>20 On</p>".as_bytes())?)
-    //         }
-    //         (&Method::GET, "/21") => {
-    //             let gpio = Gpio::new().unwrap();
-    //             gpio.write(21, Level::Low);
-    //             println!("21 on");
-    //             Ok(response.body("<h1>Hi!</h1><p>21 On</p>".as_bytes())?)
-    //         }
-    //         (&Method::GET, "/pinchange") => {
-    //             let gpio = Gpio::new().unwrap();
-    //             let mut rng = rand::thread_rng();
-    //             let num = rng.gen::<u8>() & (16-1);
-    //             println!("\nnum: {:b}", num);
-    //             for i in 0..4 {
-    //                 print!("writing pin {}", i);
-    //                 match 1 & (num>>i) {
-    //                     0 => gpio.write(PINS[i], Level::High),
-    //                     1 => gpio.write(PINS[i], Level::Low),
-    //                     _ => panic!("Yo!"),
-    //                 }
-    //                 println!(" ... done");
-    //             }
-    //             Ok(response.body("<h1>Hi!</h1><p>Pins changed!</p>".as_bytes())?)
-    //         }
-    //         (&Method::GET, "/off") => {
-    //             let gpio = Gpio::new().unwrap();
-    //             for i in 0..4 {
-    //                     gpio.write(PINS[i], Level::High);
-    //             }
-    //             println!(" ... done");
-    //             Ok(response.body("<h1>Hi!</h1><p>Pins off.</p>".as_bytes())?)
-    //         }
-    //         (_, _) => {
-    //             response.status(StatusCode::NOT_FOUND);
-    //             Ok(response.body("<h1>404</h1><p>Not found!<p>".as_bytes())?)
-    //         }
-    //     }
-    // });
-    //
-    // server.listen(host, port);
 }
