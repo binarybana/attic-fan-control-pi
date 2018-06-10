@@ -19,6 +19,7 @@ extern crate rppal;
 use rppal::gpio::{Gpio, Mode, Level};
 
 use std::sync::{Mutex, Arc};
+use std::{thread, time};
 
 // The Gpio module uses BCM pin numbering. BCM 18 equates to physical pin 12.
 // Pi1:
@@ -37,14 +38,18 @@ struct TempRecord {
 
 #[derive(Debug, Clone)]
 struct ThermostatState {
-    current_temp: f64,
+    // config:
     set_point: f64,
     buffer: f64,
-    fan_on: bool,
     smooth_alpha: f64,
-    power_on: bool,
     on_time:u32,
     off_time:u32,
+    // state:
+    current_temp: f64,
+    fan_on: bool,
+    schedule_on: bool,
+    too_hot: bool,
+    manual_on: bool,
 }
 
 fn get_temp() -> Result<f64, reqwest::Error> {
@@ -90,20 +95,23 @@ fn setup() -> ThermostatState {
         buffer: buffer,
         fan_on: false,
         smooth_alpha: alpha,
-        power_on: false,
+        schedule_on: false,
+        too_hot: false,
         on_time: 2200,
         off_time: 530,
+        manual_on: false,
     }
 }
 
 /// Always update temperature
 fn temp_updater(data: Arc<Mutex<ThermostatState>>) {
-    use std::{thread, time};
     let one_minute = time::Duration::new(60, 0);
     loop {
+        // hoist potentially long duration call out of mutex scope
+        let temp_data = get_temp();
         { // mutex lock scope
             let mut tstate = data.lock().unwrap();
-            let smoothed_temp = match get_temp() {
+            let smoothed_temp = match temp_data {
                 Ok(new_temp) => (1.0 - tstate.smooth_alpha) * tstate.current_temp + tstate.smooth_alpha * new_temp,
                 Err(_) => {
                     println!("Failed to get temp");
@@ -117,16 +125,69 @@ fn temp_updater(data: Arc<Mutex<ThermostatState>>) {
     }
 }
 
-/// Control the fan
-fn thermostat(data: Arc<Mutex<ThermostatState>>) {
-    use std::{thread, time};
-    let one_minute = time::Duration::new(60, 0);
+/// Control the GPIO
+/// IE: implement state controller
+fn overall_controller(data: Arc<Mutex<ThermostatState>>) {
+    let sleep_time = time::Duration::new(5, 0);
+    loop {
+        { // mutex lock scope
+            let mut tstate = data.lock().unwrap();
+            if tstate.manual_on || (tstate.too_hot && tstate.schedule_on) {
+                tstate.fan_on = true;
+            } else {
+                tstate.fan_on = false;
+            }
+        }
+        thread::sleep(sleep_time);
+    }
+}
+
+/// Control the GPIO
+/// IE: implement state controller
+fn gpio_controller(data: Arc<Mutex<ThermostatState>>) {
+    let sleep_time = time::Duration::new(1, 0);
     let mut gpio = Gpio::new().unwrap();
     for pin in PINS {
         gpio.set_mode(*pin, Mode::Output);
         // Make sure everything is off
         gpio.write(*pin, Level::High);
     }
+    loop {
+        { // mutex lock scope
+            let tstate = data.lock().unwrap();
+            // Here we go ahead and "drive" the controller hard for simplicity and robustness
+            if tstate.fan_on {
+                gpio.write(16, Level::Low);
+            } else {
+                gpio.write(16, Level::High);
+            }
+        }
+        thread::sleep(sleep_time);
+    }
+}
+
+/// Control the fan
+fn temp_controller(data: Arc<Mutex<ThermostatState>>) {
+    let one_minute = time::Duration::new(60, 0);
+    loop {
+        { // mutex lock scope
+            let mut tstate = data.lock().unwrap();
+            let smoothed_temp = (*tstate).current_temp;
+            if smoothed_temp < (tstate.set_point-tstate.buffer) {
+                println!("Cold enough");
+                (*tstate).too_hot = false;
+            } else if smoothed_temp > (tstate.set_point+tstate.buffer) {
+                println!("Too hot");
+                (*tstate).too_hot = true;
+            }
+        }
+        thread::sleep(one_minute);
+    }
+}
+
+/// Time based control of the fan
+fn schedule_controller(data: Arc<Mutex<ThermostatState>>) {
+    let one_minute = time::Duration::new(60, 0);
     loop {
         { // mutex lock scope
             let mut tstate = data.lock().unwrap();
@@ -137,26 +198,10 @@ fn thermostat(data: Arc<Mutex<ThermostatState>>) {
             let time_till_off = off_time.signed_duration_since(now);
             if  now < on_time && time_till_on < chrono::Duration::minutes(5) {
                 // Turn on thermostat
-                (*tstate).power_on = true;
+                (*tstate).schedule_on = true;
             } else if now < off_time && time_till_off < chrono::Duration::minutes(5) {
                 // Turn off the thermostat
-                (*tstate).power_on = false;
-                println!("Shutting off fan");
-                gpio.write(16, Level::High);
-                (*tstate).fan_on = false;
-            } else if (*tstate).power_on {
-                let smoothed_temp = (*tstate).current_temp;
-                if smoothed_temp < (tstate.set_point-tstate.buffer) && tstate.fan_on {
-                    // turn off
-                    println!("Turning off fan");
-                    (*tstate).fan_on = false;
-                    gpio.write(16, Level::High);
-                } else if smoothed_temp > (tstate.set_point+tstate.buffer) && !tstate.fan_on {
-                    // turn on
-                    println!("Turning fan on");
-                    (*tstate).fan_on = true;
-                    gpio.write(16, Level::Low);
-                }
+                (*tstate).schedule_on = false;
             }
         }
         thread::sleep(one_minute);
@@ -169,8 +214,14 @@ fn main() {
     let data2 = data.clone();
     let data3 = data.clone();
     let data4 = data.clone();
-    std::thread::spawn( || { thermostat(data2) });
-    std::thread::spawn( || { temp_updater(data4) });
+    let data5 = data.clone();
+    let data6 = data.clone();
+    let data7 = data.clone();
+    std::thread::spawn( || { overall_controller(data2) });
+    std::thread::spawn( || { gpio_controller(data4) });
+    std::thread::spawn( || { schedule_controller(data5) });
+    std::thread::spawn( || { temp_controller(data6) });
+    std::thread::spawn( || { temp_updater(data7) });
 
     rouille::start_server("0.0.0.0:8000", move |request| {
         router!(request,
@@ -179,18 +230,32 @@ fn main() {
                 rouille::Response::text(format!("Thermostat state:\n{:?}", datainside))
             },
 
-            (GET) (/on) => {
+            (GET) (/manual_on) => {
                 let mut datainside = data3.lock().unwrap();
-                (*datainside).power_on = true;
-                println!("Tstat enabled manually");
+                (*datainside).manual_on = true;
+                println!("Fan manual mode on");
                 rouille::Response::text("Turned on")
             },
 
-            (GET) (/off) => {
+            (GET) (/manual_off) => {
                 let mut datainside = data3.lock().unwrap();
-                (*datainside).power_on = false;
-                println!("Tstat disabled manually");
+                (*datainside).manual_on = false;
+                println!("Fan manual mode off");
                 rouille::Response::text("Turned off")
+                },
+
+            (GET) (/schedule_on) => {
+                let mut datainside = data3.lock().unwrap();
+                (*datainside).schedule_on = true;
+                println!("Fan schedule manually on");
+                rouille::Response::text("Schedule turned on")
+            },
+
+            (GET) (/schedule_off) => {
+                let mut datainside = data3.lock().unwrap();
+                (*datainside).schedule_on = false;
+                println!("Fan schedule manually off");
+                rouille::Response::text("Schedule turned off")
                 },
 
             (GET) (/set_point/{set_point: f64}) => {
