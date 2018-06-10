@@ -12,9 +12,12 @@ Also, if cross compiling to ARM using `cross` then you'll need to run with `SSL_
   - [x] - Get temp data from particle (either particle cloud function or GCE datastore query?)
   - [x] - Some exponential scaling to account for poor air mixing and sensor location
   - [x] - Thermostat behavior
-  - [ ] - Hook up thermostat setpoint and behavior to REST API
-    - [ ] - Switch to Gotham, Rouille, or Rocket from simple server
+  - [x] - Hook up thermostat setpoint and behavior to REST API
+    - [x] - Switch to Gotham, Rouille, or Rocket from simple server
   - [ ] - Clean up deployment, add systemd unit file, add docs for deployment
+  - [ ] - Call out to weather service for outside temp/humidity
+  - [ ] - Add logic to disable thermostat when outside weather is bad
+  - [ ] - Add logic to control nest thermostat instead
 
 ### Later
 [ ] - Google voice activity integration

@@ -17,7 +17,6 @@ use chrono::prelude::*;
 
 extern crate rppal;
 use rppal::gpio::{Gpio, Mode, Level};
-use rppal::system::DeviceInfo;
 
 use std::sync::{Mutex, Arc};
 
@@ -85,15 +84,6 @@ fn setup() -> ThermostatState {
         },
     };
     println!("Set point: {}, buffer: {}", set_point, buffer);
-    let device_info = DeviceInfo::new().unwrap();
-    println!("Model: {} (SoC: {})", device_info.model(), device_info.soc());
-
-    let mut gpio = Gpio::new().unwrap();
-    for pin in PINS {
-        gpio.set_mode(*pin, Mode::Output);
-        // Make sure everything is off
-        gpio.write(*pin, Level::High);
-    }
     ThermostatState {
         current_temp: smoothed_temp,
         set_point: set_point,
@@ -131,7 +121,12 @@ fn temp_updater(data: Arc<Mutex<ThermostatState>>) {
 fn thermostat(data: Arc<Mutex<ThermostatState>>) {
     use std::{thread, time};
     let one_minute = time::Duration::new(60, 0);
-    let gpio = Gpio::new().unwrap();
+    let mut gpio = Gpio::new().unwrap();
+    for pin in PINS {
+        gpio.set_mode(*pin, Mode::Output);
+        // Make sure everything is off
+        gpio.write(*pin, Level::High);
+    }
     loop {
         { // mutex lock scope
             let mut tstate = data.lock().unwrap();
@@ -196,7 +191,7 @@ fn main() {
                 (*datainside).power_on = false;
                 println!("Tstat disabled manually");
                 rouille::Response::text("Turned off")
-            },
+                },
 
             (GET) (/set_point/{set_point: f64}) => {
                 let mut datainside = data3.lock().unwrap();
