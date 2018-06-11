@@ -36,6 +36,17 @@ struct TempRecord {
     result: f64,
 }
 
+#[derive(Deserialize)]
+struct WeatherRecord {
+    main: WeatherInnerRecord,
+}
+
+#[derive(Deserialize)]
+struct WeatherInnerRecord {
+    temp: f64,
+    humidity: f64,
+}
+
 #[derive(Debug, Clone)]
 struct ThermostatState {
     // config:
@@ -44,12 +55,16 @@ struct ThermostatState {
     smooth_alpha: f64,
     on_time:u32,
     off_time:u32,
+    outside_max_humidity: f64,
     // state:
     current_temp: f64,
     fan_on: bool,
     schedule_on: bool,
     too_hot: bool,
     manual_on: bool,
+    outside_temp: f64,
+    outside_humidity: f64,
+    outside_right: bool,
 }
 
 fn get_temp() -> Result<f64, reqwest::Error> {
@@ -88,6 +103,13 @@ fn setup() -> ThermostatState {
             1.0
         },
     };
+    let outside_max_humidity = match std::env::var("OUTSIDE_MAX_HUMIDITY") {
+        Ok(val) => val.parse().unwrap_or(85.0),
+        Err(_) => {
+            println!("Env var OUTSIDE_MAX_HUMIDITY not set");
+            1.0
+        },
+    };
     println!("Set point: {}, buffer: {}", set_point, buffer);
     ThermostatState {
         current_temp: smoothed_temp,
@@ -100,6 +122,10 @@ fn setup() -> ThermostatState {
         on_time: 2200,
         off_time: 530,
         manual_on: false,
+        outside_temp: 0.0,
+        outside_humidity: 0.0,
+        outside_right: true,
+        outside_max_humidity: outside_max_humidity,
     }
 }
 
@@ -119,9 +145,37 @@ fn temp_updater(data: Arc<Mutex<ThermostatState>>) {
                 },
             };
             (*tstate).current_temp = smoothed_temp;
+            // Since this loop runs faster, we update `outside_right` here instead of
+            // `weather_updater`
+            (*tstate).outside_right = (tstate.outside_temp > (tstate.current_temp + tstate.buffer)) && tstate.outside_humidity < tstate.outside_max_humidity;
             println!("smoothed temp: {}", smoothed_temp);
         }
         thread::sleep(one_minute);
+    }
+}
+
+/// Grab latest weather data
+fn weather_updater(data: Arc<Mutex<ThermostatState>>) {
+    let ten_minutes = time::Duration::new(60*10, 0);
+    let apikey = match std::env::var("OPENWEATHERMAP_KEY") {
+        Ok(val) => val,
+        Err(_) => panic!("Env var OPENWEATHERMAP_KEY not set"),
+    };
+    let client = reqwest::ClientBuilder::new().build().unwrap(); // TODO fix unwrap
+    loop {
+        // hoist potentially long duration call out of mutex scope
+        let url = format!("http://api.openweathermap.org/data/2.5/weather?id=5384690&APPID={}", apikey);
+        let mut resp = client.get(&url).send().unwrap(); // TODO fix unwrap
+        let weather_record: WeatherRecord = resp.json().unwrap(); // TODO fix unwrap
+        let temp = weather_record.main.temp - 273.15;
+        let humidity = weather_record.main.humidity;
+        println!("Outer temp: {}, Humidity: {}", temp, humidity);
+        { // mutex lock scope
+            let mut tstate = data.lock().unwrap();
+            (*tstate).outside_temp = temp;
+            (*tstate).outside_humidity = humidity;
+        }
+        thread::sleep(ten_minutes);
     }
 }
 
@@ -132,7 +186,7 @@ fn overall_controller(data: Arc<Mutex<ThermostatState>>) {
     loop {
         { // mutex lock scope
             let mut tstate = data.lock().unwrap();
-            if tstate.manual_on || (tstate.too_hot && tstate.schedule_on) {
+            if tstate.manual_on || (tstate.too_hot && tstate.outside_right && tstate.schedule_on) {
                 tstate.fan_on = true;
             } else {
                 tstate.fan_on = false;
@@ -217,11 +271,13 @@ fn main() {
     let data5 = data.clone();
     let data6 = data.clone();
     let data7 = data.clone();
+    let data8 = data.clone();
     std::thread::spawn( || { overall_controller(data2) });
     std::thread::spawn( || { gpio_controller(data4) });
     std::thread::spawn( || { schedule_controller(data5) });
     std::thread::spawn( || { temp_controller(data6) });
     std::thread::spawn( || { temp_updater(data7) });
+    std::thread::spawn( || { weather_updater(data8) });
 
     rouille::start_server("0.0.0.0:8000", move |request| {
         router!(request,
