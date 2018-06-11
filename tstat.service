@@ -1,0 +1,14 @@
+[Unit]
+Description=Bedroom thermostat
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+EnvironmentFile=/home/pi/tstat/env
+WorkingDirectory=/home/pi/tstat
+ExecStart=/home/pi/tstat/pi-gpio
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
