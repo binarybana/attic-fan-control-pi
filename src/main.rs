@@ -148,7 +148,7 @@ fn temp_updater(data: Arc<Mutex<ThermostatState>>) {
             // Since this loop runs faster, we update `outside_right` here instead of
             // `weather_updater`
             (*tstate).outside_right = (tstate.outside_temp < (tstate.current_temp - tstate.buffer)) &&
-                ((tstate.outside_humidity < tstate.outside_max_humidity) || ((tstate.current_temp - tstate.outside_temp) > 3.0)) ;
+                ((tstate.outside_humidity < tstate.outside_max_humidity) || ((tstate.current_temp - tstate.outside_temp) > 1.0)) ;
             println!("smoothed temp: {}", smoothed_temp);
         }
         thread::sleep(one_minute);
