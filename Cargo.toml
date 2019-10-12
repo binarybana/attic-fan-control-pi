@@ -2,21 +2,16 @@
 authors = ["Jason Knight <Jason@JasonKnight.us>"]
 name = "pi-gpio"
 version = "0.1.0"
+edition = "2018"
 
 [dependencies]
-env_logger = "0.5.6"
-log = "0.4.1"
-rand = "0.4.2"
-rppal = "0.4.0"
+env_logger = "0.7.0"
+log = "0.4.8"
+rand = "0.7.2"
+rppal = "0.11.3"
 serde = "1.0.36"
-serde_json = "1.0.13"
-serde_derive = "1.0.36"
-reqwest = "0.8.5"
-chrono = "0.4.1"
-rouille = "2.1.0"
-
-# Needed until https://github.com/tokio-rs/tokio/pull/274 lands
-[patch.crates-io]
-tokio = { git = 'https://github.com/dgriffen/tokio', branch = 'patch-1' }
-tokio-executor = { git = 'https://github.com/dgriffen/tokio', branch = 'patch-1' }
-tokio-reactor = { git = 'https://github.com/dgriffen/tokio', branch = 'patch-1' }
+serde_json = "1.0.41"
+serde_derive = "1.0.101"
+reqwest = "0.9.22"
+chrono = "0.4.9"
+rouille = "3.0.0"

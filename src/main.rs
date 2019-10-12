@@ -1,25 +1,13 @@
-// #[macro_use]
-// extern crate log;
-// extern crate env_logger;
+use chrono::prelude::*;
+use serde_derive::{Deserialize, Serialize};
 
-extern crate reqwest;
+use rppal::gpio::Gpio;
+
+use std::sync::{Arc, Mutex};
+use std::{thread, time};
 
 #[macro_use]
 extern crate rouille;
-
-#[macro_use]
-extern crate serde_derive;
-extern crate serde;
-extern crate serde_json;
-
-extern crate chrono;
-use chrono::prelude::*;
-
-extern crate rppal;
-use rppal::gpio::{Gpio, Mode, Level};
-
-use std::sync::{Mutex, Arc};
-use std::{thread, time};
 
 // The Gpio module uses BCM pin numbering. BCM 18 equates to physical pin 12.
 // Pi1:
@@ -29,7 +17,7 @@ use std::{thread, time};
 // 16: bedroom
 // 20: kids room
 // 21: kids room
-const PINS: &[u8] = &[12, 16, 20, 21];
+// const PINS: &[u8] = &[12, 16, 20, 21];
 
 #[derive(Deserialize)]
 struct TempRecord {
@@ -47,23 +35,23 @@ struct WeatherInnerRecord {
     humidity: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 struct ThermostatState {
     // config:
     set_point: f64,
     buffer: f64,
     smooth_alpha: f64,
-    on_time:u32,
-    off_time:u32,
+    on_time: u32,
+    off_time: u32,
     outside_max_humidity: f64,
     // state:
-    current_temp: f64,
+    current_temp: Option<f64>,
     fan_on: bool,
     schedule_on: bool,
     too_hot: bool,
     manual_on: bool,
-    outside_temp: f64,
-    outside_humidity: f64,
+    outside_temp: Option<f64>,
+    outside_humidity: Option<f64>,
     outside_right: bool,
 }
 
@@ -77,9 +65,12 @@ fn get_temp() -> Result<f64, reqwest::Error> {
         Ok(val) => val,
         Err(_) => panic!("Env var ATTIC_DEVICE_ID (with particle device id) not set"),
     };
-    
+
     let client = reqwest::ClientBuilder::new().build()?;
-    let url = format!("https://api.particle.io/v1/devices/{}/temp?access_token={}", device_id, token);
+    let url = format!(
+        "https://api.particle.io/v1/devices/{}/temp?access_token={}",
+        device_id, token
+    );
     let mut resp = client.get(&url).send()?;
     let temp_record: TempRecord = resp.json()?;
     let temp = temp_record.result;
@@ -88,27 +79,32 @@ fn get_temp() -> Result<f64, reqwest::Error> {
 
 fn setup() -> ThermostatState {
     let alpha = 0.9;
-    let smoothed_temp = get_temp().unwrap_or(17.0);
+    let smoothed_temp = get_temp()
+        .map_err(|e| {
+            log::warn!("Problem getting temp: {:?}", e);
+            e
+        })
+        .ok();
     let set_point = match std::env::var("ATTIC_SET_POINT") {
         Ok(val) => val.parse().unwrap_or(17.7),
         Err(_) => {
             println!("Env var ATTIC_SET_POINT not set");
             17.7
-        },
+        }
     };
     let buffer = match std::env::var("ATTIC_BUFFER") {
         Ok(val) => val.parse().unwrap_or(1.0),
         Err(_) => {
             println!("Env var ATTIC_BUFFER not set");
             1.0
-        },
+        }
     };
     let outside_max_humidity = match std::env::var("OUTSIDE_MAX_HUMIDITY") {
         Ok(val) => val.parse().unwrap_or(85.0),
         Err(_) => {
             println!("Env var OUTSIDE_MAX_HUMIDITY not set");
             1.0
-        },
+        }
     };
     println!("Set point: {}, buffer: {}", set_point, buffer);
     ThermostatState {
@@ -122,8 +118,8 @@ fn setup() -> ThermostatState {
         on_time: 2200,
         off_time: 530,
         manual_on: false,
-        outside_temp: 0.0,
-        outside_humidity: 0.0,
+        outside_temp: None,
+        outside_humidity: None,
         outside_right: true,
         outside_max_humidity: outside_max_humidity,
     }
@@ -135,21 +131,34 @@ fn temp_updater(data: Arc<Mutex<ThermostatState>>) {
     loop {
         // hoist potentially long duration call out of mutex scope
         let temp_data = get_temp();
-        { // mutex lock scope
+        {
+            // mutex lock scope
             let mut tstate = data.lock().unwrap();
             let smoothed_temp = match temp_data {
-                Ok(new_temp) => (1.0 - tstate.smooth_alpha) * tstate.current_temp + tstate.smooth_alpha * new_temp,
-                Err(_) => {
-                    println!("Failed to get temp");
-                    continue;
-                },
+                Ok(new_temp) => Some(
+                    (1.0 - tstate.smooth_alpha) * tstate.current_temp.unwrap_or(new_temp)
+                        + tstate.smooth_alpha * new_temp,
+                ),
+                Err(e) => {
+                    log::warn!("Failed to get temp: {:?}", e);
+                    None
+                }
             };
             (*tstate).current_temp = smoothed_temp;
             // Since this loop runs faster, we update `outside_right` here instead of
             // `weather_updater`
-            (*tstate).outside_right = (tstate.outside_temp < (tstate.current_temp - tstate.buffer)) &&
-                ((tstate.outside_humidity < tstate.outside_max_humidity) || ((tstate.current_temp - tstate.outside_temp) > 1.0)) ;
-            println!("smoothed temp: {}", smoothed_temp);
+            (*tstate).outside_right = match (
+                tstate.outside_temp,
+                tstate.current_temp,
+                tstate.outside_humidity,
+            ) {
+                (None, _, _) | (_, None, _) | (_, _, None) => false,
+                (Some(outside), Some(inside), Some(humidity)) => {
+                    (outside < (inside - tstate.buffer))
+                        && ((humidity < tstate.outside_max_humidity) || ((inside - outside) > 1.0))
+                }
+            };
+            log::info!("smoothed temp: {:?}", smoothed_temp);
         }
         thread::sleep(one_minute);
     }
@@ -157,7 +166,7 @@ fn temp_updater(data: Arc<Mutex<ThermostatState>>) {
 
 /// Grab latest weather data
 fn weather_updater(data: Arc<Mutex<ThermostatState>>) {
-    let ten_minutes = time::Duration::new(60*10, 0);
+    let ten_minutes = time::Duration::new(60 * 10, 0);
     let apikey = match std::env::var("OPENWEATHERMAP_KEY") {
         Ok(val) => val,
         Err(_) => panic!("Env var OPENWEATHERMAP_KEY not set"),
@@ -165,13 +174,22 @@ fn weather_updater(data: Arc<Mutex<ThermostatState>>) {
     let client = reqwest::ClientBuilder::new().build().unwrap(); // TODO fix unwrap
     loop {
         // hoist potentially long duration call out of mutex scope
-        let url = format!("http://api.openweathermap.org/data/2.5/weather?id=5384690&APPID={}", apikey);
+        let url = format!(
+            "http://api.openweathermap.org/data/2.5/weather?id=5384690&APPID={}",
+            apikey
+        );
         let mut resp = client.get(&url).send().unwrap(); // TODO fix unwrap
-        let weather_record: WeatherRecord = resp.json().unwrap(); // TODO fix unwrap
-        let temp = weather_record.main.temp - 273.15;
-        let humidity = weather_record.main.humidity;
-        println!("Outer temp: {}, Humidity: {}", temp, humidity);
-        { // mutex lock scope
+        let weather_record: Option<WeatherRecord> = resp
+            .json()
+            .map_err(|e| log::warn!("Couldn't decode weather json: {:?}", e))
+            .ok();
+        let (temp, humidity) = match weather_record {
+            None => (None, None),
+            Some(r) => (Some(r.main.temp - 273.15), Some(r.main.humidity)),
+        };
+        log::info!("Outer temp: {:?}, Humidity: {:?}", temp, humidity);
+        {
+            // mutex lock scope
             let mut tstate = data.lock().unwrap();
             (*tstate).outside_temp = temp;
             (*tstate).outside_humidity = humidity;
@@ -185,7 +203,8 @@ fn weather_updater(data: Arc<Mutex<ThermostatState>>) {
 fn overall_controller(data: Arc<Mutex<ThermostatState>>) {
     let sleep_time = time::Duration::new(5, 0);
     loop {
-        { // mutex lock scope
+        {
+            // mutex lock scope
             let mut tstate = data.lock().unwrap();
             if tstate.manual_on || (tstate.too_hot && tstate.outside_right && tstate.schedule_on) {
                 tstate.fan_on = true;
@@ -201,20 +220,19 @@ fn overall_controller(data: Arc<Mutex<ThermostatState>>) {
 /// IE: implement state controller
 fn gpio_controller(data: Arc<Mutex<ThermostatState>>) {
     let sleep_time = time::Duration::new(1, 0);
-    let mut gpio = Gpio::new().unwrap();
-    for pin in PINS {
-        gpio.set_mode(*pin, Mode::Output);
-        // Make sure everything is off
-        gpio.write(*pin, Level::High);
-    }
+    let gpio = Gpio::new().expect("Couldn't init GPIO");
+    let mut pin = gpio.get(16).expect("Couldn't grab pin 16").into_output();
+    // Turn it off to start with
+    pin.set_high();
     loop {
-        { // mutex lock scope
+        {
+            // mutex lock scope
             let tstate = data.lock().unwrap();
             // Here we go ahead and "drive" the controller hard for simplicity and robustness
             if tstate.fan_on {
-                gpio.write(16, Level::Low);
+                pin.set_low();
             } else {
-                gpio.write(16, Level::High);
+                pin.set_high();
             }
         }
         thread::sleep(sleep_time);
@@ -225,15 +243,20 @@ fn gpio_controller(data: Arc<Mutex<ThermostatState>>) {
 fn temp_controller(data: Arc<Mutex<ThermostatState>>) {
     let one_minute = time::Duration::new(60, 0);
     loop {
-        { // mutex lock scope
+        {
+            // mutex lock scope
             let mut tstate = data.lock().unwrap();
-            let smoothed_temp = (*tstate).current_temp;
-            if smoothed_temp < (tstate.set_point-tstate.buffer) {
-                println!("Cold enough");
+            if let Some(smoothed_temp) = (*tstate).current_temp {
+                if smoothed_temp < (tstate.set_point - tstate.buffer) {
+                    log::info!("Cold enough");
+                    (*tstate).too_hot = false;
+                } else if smoothed_temp > (tstate.set_point + tstate.buffer) {
+                    log::info!("Too hot");
+                    (*tstate).too_hot = true;
+                }
+            } else {
+                log::warn!("Disabling fan since we don't know current temp");
                 (*tstate).too_hot = false;
-            } else if smoothed_temp > (tstate.set_point+tstate.buffer) {
-                println!("Too hot");
-                (*tstate).too_hot = true;
             }
         }
         thread::sleep(one_minute);
@@ -244,14 +267,19 @@ fn temp_controller(data: Arc<Mutex<ThermostatState>>) {
 fn schedule_controller(data: Arc<Mutex<ThermostatState>>) {
     let one_minute = time::Duration::new(60, 0);
     loop {
-        { // mutex lock scope
+        {
+            // mutex lock scope
             let mut tstate = data.lock().unwrap();
             let now = Local::now();
-            let on_time = now.date().and_hms((*tstate).on_time/100, (*tstate).on_time%100, 0);
-            let off_time = now.date().and_hms((*tstate).off_time/100, (*tstate).off_time%100, 0);
+            let on_time = now
+                .date()
+                .and_hms((*tstate).on_time / 100, (*tstate).on_time % 100, 0);
+            let off_time =
+                now.date()
+                    .and_hms((*tstate).off_time / 100, (*tstate).off_time % 100, 0);
             let time_till_on = on_time.signed_duration_since(now);
             let time_till_off = off_time.signed_duration_since(now);
-            if  now < on_time && time_till_on < chrono::Duration::minutes(5) {
+            if now < on_time && time_till_on < chrono::Duration::minutes(5) {
                 // Turn on thermostat
                 (*tstate).schedule_on = true;
             } else if now < off_time && time_till_off < chrono::Duration::minutes(5) {
@@ -264,7 +292,7 @@ fn schedule_controller(data: Arc<Mutex<ThermostatState>>) {
 }
 
 fn main() {
-
+    env_logger::init();
     let data = Arc::new(Mutex::new(setup()));
     let data2 = data.clone();
     let data3 = data.clone();
@@ -273,18 +301,18 @@ fn main() {
     let data6 = data.clone();
     let data7 = data.clone();
     let data8 = data.clone();
-    std::thread::spawn( || { overall_controller(data2) });
-    std::thread::spawn( || { gpio_controller(data4) });
-    std::thread::spawn( || { schedule_controller(data5) });
-    std::thread::spawn( || { temp_controller(data6) });
-    std::thread::spawn( || { temp_updater(data7) });
-    std::thread::spawn( || { weather_updater(data8) });
+    std::thread::spawn(|| overall_controller(data2));
+    std::thread::spawn(|| gpio_controller(data4));
+    std::thread::spawn(|| schedule_controller(data5));
+    std::thread::spawn(|| temp_controller(data6));
+    std::thread::spawn(|| temp_updater(data7));
+    std::thread::spawn(|| weather_updater(data8));
 
     rouille::start_server("0.0.0.0:8000", move |request| {
-        router!(request,
+        rouille::router!(request,
             (GET) (/) => {
                 let datainside: &ThermostatState = &(*data3.lock().unwrap());
-                rouille::Response::text(format!("Thermostat state:\n{:?}", datainside))
+                rouille::Response::json(datainside)
             },
 
             (GET) (/manual_on) => {
